@@ -1,0 +1,151 @@
+#define TINY_GSM_MODEM_SIM7600 // Cambia a A7672X si tu placa usa ese chip específico
+
+#include <Arduino.h>
+#include <TinyGsmClient.h>
+#include <ArduinoHttpClient.h> // Librería oficial para HTTP rápido
+
+// --- PUERTOS SERIE DE HARDWARE ---
+#define SerialAT     Serial1 // Comunicación con el módem SIM7600
+#define SensorSerial Serial2 // Comunicación con el sensor DYP-A19
+
+// --- PINES MÓDEM ---
+#define MODEM_TX 26
+#define MODEM_RX 27
+
+// --- PINES SENSOR DYP-A19 ---
+#define SENSOR_RX 16 // ESP32 RX2 <- Sensor TX
+#define SENSOR_TX 17 // ESP32 TX2 -> Sensor RX
+
+// --- CONFIGURACIÓN RED CELULAR (Claro Argentina) ---
+const char apn[]  = "igprs.claro.com.ar";
+const char user[] = "";
+const char pass[] = "";
+
+// --- CONFIGURACIÓN THINGSPEAK ---
+const char server[] = "api.thingspeak.com";
+const int port      = 80;
+String apiKey       = "UC6FXJB6RIPJH2NB";
+
+// --- OBJETOS RED ---
+TinyGsm modem(SerialAT);
+TinyGsmClient client(modem);
+HttpClient http(client, server, port);
+
+// Variables de tiempo y sensor
+unsigned long lastSendTime = 0;
+const unsigned long sendInterval = 16000; // 16 segundos (el mínimo de ThingSpeak es 15s)
+int ultimaDistancia = -1;
+
+// Función para leer el sensor ultrasónico DYP-A19
+int leerDistanciaDYP() {
+  while (SensorSerial.available() > 4) {
+    SensorSerial.read();
+  }
+
+  if (SensorSerial.available() >= 4) {
+    uint8_t datos[4];
+    if (SensorSerial.peek() == 0xFF) {
+      SensorSerial.readBytes(datos, 4);
+      uint8_t checksumCalculado = (datos[0] + datos[1] + datos[2]) & 0xFF;
+
+      if (checksumCalculado == datos[3]) {
+        return (datos[1] << 8) + datos[2];
+      }
+    } else {
+      SensorSerial.read();
+    }
+  }
+  return -1;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // 1. Sensor
+  SensorSerial.begin(9600, SERIAL_8N1, SENSOR_RX, SENSOR_TX);
+  Serial.println("\nSensor DYP-A19 inicializado.");
+
+  // 2. Módem SIM7600
+  SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
+  delay(2000);
+
+  Serial.println("Inicializando módem...");
+  if (!modem.init()) {
+    Serial.println("ERROR: Sin respuesta del módem.");
+    while (1);
+  }
+
+  // --- CONFIGURACIONES ANTI-DESCONEXIÓN ---
+  modem.sendAT("+CSCLK=0"); // Desactiva el modo de suspensión automática del módem
+  modem.waitResponse();
+  http.setTimeout(5000);    // Reduce el timeout a 5s para que no se quede colgado
+
+  Serial.println("Registrando en red celular...");
+  if (!modem.waitForNetwork(30000L)) {
+    Serial.println("ERROR: Sin cobertura de red.");
+    while (1);
+  }
+  Serial.println("RED OK");
+
+  Serial.println("Conectando APN Claro...");
+  if (!modem.gprsConnect(apn, user, pass)) {
+    Serial.println("ERROR: Fallo al conectar GPRS.");
+    while (1);
+  }
+  Serial.println("INTERNET OK - Sistema Listo");
+}
+
+void loop() {
+  // --- LECTURA CONSTANTE DEL SENSOR (Tiempo real) ---
+  int distLectura = leerDistanciaDYP();
+  if (distLectura > 0) {
+    ultimaDistancia = distLectura;
+    Serial.print("Distancia actual: ");
+    Serial.print(ultimaDistancia);
+    Serial.println(" mm");
+  }
+
+  // --- ENVÍO A THINGSPEAK ---
+  if (millis() - lastSendTime >= sendInterval) {
+    lastSendTime = millis();
+
+    if (ultimaDistancia == -1) {
+      Serial.println("Sin lectura válida aún.");
+      return;
+    }
+
+    // Reconexión rápida solo si es estrictamente necesario
+    if (!modem.isGprsConnected()) {
+      Serial.println("Reconectando datos móviles...");
+      modem.gprsConnect(apn, user, pass);
+    }
+
+    // Mostrar intensidad de señal en consola (CSQ)
+    int signalQuality = modem.getSignalQuality();
+    Serial.print("\n[Señal 4G: ");
+    Serial.print(signalQuality);
+    Serial.println("/31]");
+
+    Serial.println("Enviando a ThingSpeak...");
+    
+    String url = "/update?api_key=" + apiKey + "&field1=" + String(ultimaDistancia);
+
+    // Petición HTTP rápida
+    http.get(url);
+
+    int statusCode = http.responseStatusCode();
+    String response = http.responseBody();
+
+    if (statusCode == 200 && response != "0") {
+      Serial.print("¡Éxito! Entrada guardada en ThingSpeak ID: ");
+      Serial.println(response);
+    } else {
+      Serial.print("Error en el envío. Código HTTP: ");
+      Serial.println(statusCode);
+    }
+
+    http.stop(); // Cierra la conexión inmediatamente para liberar el socket
+  }
+
+  delay(20); // Fluidez total en la lectura
+}
