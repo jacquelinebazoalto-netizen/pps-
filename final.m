@@ -11,7 +11,7 @@
 #define SENSOR_RX         16    // ESP32 RX2 <- Sensor TX
 #define SENSOR_TX         17    // ESP32 TX2 -> Sensor RX
 
-#define MODEM_TX          26    // ESP32 TX1 -> Módem RX
+#define MODEM_TX          26    // ESP32 TX1 -> Módem RX 
 #define MODEM_RX          27    // ESP32 RX1 <- Módem TX
 #define PIN_FUENTE        34    // Divisor de tensión ADC1
 
