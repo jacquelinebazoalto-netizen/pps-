@@ -9,8 +9,8 @@
 #define SensorSerial Serial2 // Comunicación con el sensor DYP-A19
 
 // --- PINES MÓDEM ---
-#define MODEM_TX 18
-#define MODEM_RX 19
+#define MODEM_TX 26
+#define MODEM_RX 27
 
 // --- PINES SENSOR DYP-A19 ---
 #define SENSOR_RX 16 // ESP32 RX2 <- Sensor TX
